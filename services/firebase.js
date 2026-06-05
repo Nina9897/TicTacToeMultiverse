@@ -1,4 +1,4 @@
-// services/firebase.js - VERSIÓN COMPLETA CORREGIDA
+// services/firebase.js - VERSIÓN COMPLETA CON SOPORTE TIME QUIZ
 import { initializeApp } from 'firebase/app';
 import { 
   getDatabase, 
@@ -32,6 +32,31 @@ export const createRoom = async (roomCode, playerName, gameMode, totalRounds = 3
   const roomRef = ref(database, `rooms/${roomCode}`);
   const playerId = generateRoomCode() + Date.now();
   
+  // Estado inicial según el modo de juego
+  let gameState = {
+    board: Array(9).fill(''),
+    currentTurn: 'X',
+    winner: null,
+    scores: { X: 0, O: 0 },
+    currentRound: 1,
+    xHistory: [],
+    oHistory: [],
+    blockedCells: [],
+    turnCount: 0,
+  };
+  
+  // Estado específico para TIME QUIZ
+  if (gameMode === 'timequiz') {
+    gameState = {
+      ...gameState,
+      energy: { X: 50, O: 50 },
+      gameTimeline: [],
+      waitingForAnswer: true,
+      currentQuestion: null,
+      moveCount: 0,
+    };
+  }
+  
   const roomData = {
     roomCode,
     gameMode,
@@ -46,17 +71,7 @@ export const createRoom = async (roomCode, playerName, gameMode, totalRounds = 3
         joinedAt: serverTimestamp(),
       }
     },
-    gameState: {
-      board: Array(9).fill(''),
-      currentTurn: 'X',
-      winner: null,
-      scores: { X: 0, O: 0 },
-      currentRound: 1,
-      xHistory: [],
-      oHistory: [],
-      blockedCells: [],
-      turnCount: 0,
-    },
+    gameState: gameState,
     createdAt: serverTimestamp(),
   };
   
@@ -102,6 +117,11 @@ export const joinRoom = async (roomCode, playerName) => {
         joinedAt: serverTimestamp(),
       };
       
+      // Si es TIME QUIZ, asegurar que el nuevo jugador tenga energía
+      if (room.gameMode === 'timequiz' && playerSymbol === 'O') {
+        updates[`rooms/${roomCode}/gameState/energy/O`] = 50;
+      }
+      
       if (playerCount + 1 >= 2) {
         updates[`rooms/${roomCode}/status`] = 'playing';
       }
@@ -128,24 +148,80 @@ export const subscribeToRoom = (roomCode, callback) => {
   });
 };
 
-// 🔥 FUNCION CORREGIDA - Guarda el estado COMPLETO para todos los modos
+// 🔥 FUNCIÓN PRINCIPAL - Guarda el estado COMPLETO para TODOS los modos
 export const updateGameState = async (roomCode, gameState) => {
   if (!roomCode || !gameState) return;
   
+  let safeGameState;
+  
+  // Obtener el modo de juego actual
+  const roomRef = ref(database, `rooms/${roomCode}`);
+  const snapshot = await new Promise((resolve) => {
+    onValue(roomRef, (snap) => resolve(snap), { onlyOnce: true });
+  });
+  const room = snapshot.val();
+  const gameMode = room?.gameMode || 'classic';
+  
+  // Crear estado seguro según el modo
+  if (gameMode === 'timequiz') {
+    safeGameState = {
+      board: gameState.board || Array(9).fill(''),
+      currentTurn: gameState.currentTurn || 'X',
+      winner: gameState.winner || null,
+      scores: gameState.scores || { X: 0, O: 0 },
+      currentRound: gameState.currentRound || 1,
+      xHistory: gameState.xHistory || [],
+      oHistory: gameState.oHistory || [],
+      blockedCells: gameState.blockedCells || [],
+      turnCount: gameState.turnCount || 0,
+      // Time Quiz específico
+      energy: gameState.energy || { X: 50, O: 50 },
+      gameTimeline: gameState.gameTimeline || [],
+      waitingForAnswer: gameState.waitingForAnswer !== undefined ? gameState.waitingForAnswer : true,
+      currentQuestion: gameState.currentQuestion || null,
+      moveCount: gameState.moveCount || 0,
+    };
+  } else {
+    safeGameState = {
+      board: gameState.board || Array(9).fill(''),
+      currentTurn: gameState.currentTurn || 'X',
+      winner: gameState.winner || null,
+      scores: gameState.scores || { X: 0, O: 0 },
+      currentRound: gameState.currentRound || 1,
+      xHistory: gameState.xHistory || [],
+      oHistory: gameState.oHistory || [],
+      blockedCells: gameState.blockedCells || [],
+      turnCount: gameState.turnCount || 0,
+    };
+  }
+  
   const gameStateRef = ref(database, `rooms/${roomCode}/gameState`);
-  await set(gameStateRef, {
+  await set(gameStateRef, safeGameState);
+};
+
+// Función específica para TIME QUIZ (actualiza todo el estado del modo)
+export const updateTimeQuizState = async (roomCode, gameState) => {
+  if (!roomCode || !gameState) return;
+  
+  const timeQuizState = {
     board: gameState.board || Array(9).fill(''),
     currentTurn: gameState.currentTurn || 'X',
     winner: gameState.winner || null,
     scores: gameState.scores || { X: 0, O: 0 },
     currentRound: gameState.currentRound || 1,
-    // Modo Temporal
     xHistory: gameState.xHistory || [],
     oHistory: gameState.oHistory || [],
-    // Modo Caos
     blockedCells: gameState.blockedCells || [],
     turnCount: gameState.turnCount || 0,
-  });
+    energy: gameState.energy || { X: 50, O: 50 },
+    gameTimeline: gameState.gameTimeline || [],
+    waitingForAnswer: gameState.waitingForAnswer !== undefined ? gameState.waitingForAnswer : true,
+    currentQuestion: gameState.currentQuestion || null,
+    moveCount: gameState.moveCount || 0,
+  };
+  
+  const gameStateRef = ref(database, `rooms/${roomCode}/gameState`);
+  await set(gameStateRef, timeQuizState);
 };
 
 // Función para actualizar solo el tablero (más eficiente)
@@ -172,17 +248,70 @@ export const updateMove = async (roomCode, gameState) => {
     return;
   }
   
-  const safeGameState = {
-    board: Array.isArray(gameState.board) ? gameState.board : Array(9).fill(''),
-    currentTurn: gameState.currentTurn || (gameState.isXTurn ? 'X' : 'O'),
-    winner: gameState.winner || null,
-    scores: gameState.scores || { X: 0, O: 0 },
-    currentRound: gameState.currentRound || 1,
-    xHistory: gameState.xHistory || [],
-    oHistory: gameState.oHistory || [],
-    blockedCells: gameState.blockedCells || [],
-    turnCount: gameState.turnCount || 0,
-  };
+  // Obtener el modo de juego
+  const roomRef = ref(database, `rooms/${roomCode}`);
+  const snapshot = await new Promise((resolve) => {
+    onValue(roomRef, (snap) => resolve(snap), { onlyOnce: true });
+  });
+  const room = snapshot.val();
+  const gameMode = room?.gameMode || 'classic';
+  
+  let safeGameState;
+  
+  if (gameMode === 'timequiz') {
+    safeGameState = {
+      board: Array.isArray(gameState.board) ? gameState.board : Array(9).fill(''),
+      currentTurn: gameState.currentTurn || (gameState.isXTurn ? 'X' : 'O'),
+      winner: gameState.winner || null,
+      scores: gameState.scores || { X: 0, O: 0 },
+      currentRound: gameState.currentRound || 1,
+      xHistory: gameState.xHistory || [],
+      oHistory: gameState.oHistory || [],
+      blockedCells: gameState.blockedCells || [],
+      turnCount: gameState.turnCount || 0,
+      energy: gameState.energy || { X: 50, O: 50 },
+      gameTimeline: gameState.gameTimeline || [],
+      waitingForAnswer: gameState.waitingForAnswer !== undefined ? gameState.waitingForAnswer : true,
+      currentQuestion: gameState.currentQuestion || null,
+      moveCount: gameState.moveCount || 0,
+    };
+  } else if (gameMode === 'temporal') {
+    safeGameState = {
+      board: Array.isArray(gameState.board) ? gameState.board : Array(9).fill(''),
+      currentTurn: gameState.currentTurn || (gameState.isXTurn ? 'X' : 'O'),
+      winner: gameState.winner || null,
+      scores: gameState.scores || { X: 0, O: 0 },
+      currentRound: gameState.currentRound || 1,
+      xHistory: gameState.xHistory || [],
+      oHistory: gameState.oHistory || [],
+      blockedCells: [],
+      turnCount: 0,
+    };
+  } else if (gameMode === 'chaos') {
+    safeGameState = {
+      board: Array.isArray(gameState.board) ? gameState.board : Array(9).fill(''),
+      currentTurn: gameState.currentTurn || (gameState.isXTurn ? 'X' : 'O'),
+      winner: gameState.winner || null,
+      scores: gameState.scores || { X: 0, O: 0 },
+      currentRound: gameState.currentRound || 1,
+      xHistory: [],
+      oHistory: [],
+      blockedCells: gameState.blockedCells || [],
+      turnCount: gameState.turnCount || 0,
+    };
+  } else {
+    safeGameState = {
+      board: Array.isArray(gameState.board) ? gameState.board : Array(9).fill(''),
+      currentTurn: gameState.currentTurn || (gameState.isXTurn ? 'X' : 'O'),
+      winner: gameState.winner || null,
+      scores: gameState.scores || { X: 0, O: 0 },
+      currentRound: gameState.currentRound || 1,
+      xHistory: [],
+      oHistory: [],
+      blockedCells: [],
+      turnCount: 0,
+    };
+  }
   
   console.log('Enviando updateMove a Firebase:', safeGameState);
   
@@ -193,6 +322,38 @@ export const updateMove = async (roomCode, gameState) => {
   } catch (error) {
     console.error('Error al actualizar move:', error);
     throw error;
+  }
+};
+
+// Función para actualizar el turno (rápida)
+export const updateTurn = async (roomCode, currentTurn) => {
+  if (!roomCode || !currentTurn) return;
+  
+  const updates = {};
+  updates[`rooms/${roomCode}/gameState/currentTurn`] = currentTurn;
+  
+  try {
+    await update(ref(database), updates);
+  } catch (error) {
+    console.error('Error al actualizar turno:', error);
+  }
+};
+
+// Función para actualizar el tablero después de un movimiento
+export const updateGameMove = async (roomCode, newBoard, nextTurn, winner = null) => {
+  if (!roomCode || !newBoard) return;
+  
+  const updates = {};
+  updates[`rooms/${roomCode}/gameState/board`] = newBoard;
+  updates[`rooms/${roomCode}/gameState/currentTurn`] = nextTurn;
+  if (winner !== null) {
+    updates[`rooms/${roomCode}/gameState/winner`] = winner;
+  }
+  
+  try {
+    await update(ref(database), updates);
+  } catch (error) {
+    console.error('Error al actualizar movimiento:', error);
   }
 };
 
